@@ -14,8 +14,11 @@ from typing import Any, Dict, List, Optional, Union
 # 1) 关闭遥测: 消除 [PostHog] Multiple active PostHog clients 警告
 os.environ.setdefault("MEM0_TELEMETRY", "false")
 # 2) 抑制 spaCy 未装的 error 日志 (可选实体链接功能, 不影响主流程)
-logging.getLogger("mem0").setLevel(logging.WARNING)
 logging.getLogger("mem0.memory.entity_extractor").setLevel(logging.CRITICAL)
+# 3) 抑制 Bedrock 自检误报: Mem0 用 ListFoundationModels 检查模型时不认识
+#    inference profile ID (如 us.anthropic.claude-sonnet-4-5-*), 会误报
+#    "may not be available in region", 实际调用完全正常。
+logging.getLogger("mem0.llms.aws_bedrock").setLevel(logging.ERROR)
 
 from mem0 import Memory  # noqa: E402
 
