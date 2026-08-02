@@ -353,12 +353,10 @@ python validate.py
 ### 7. 试聊 / 跑示例
 
 ```bash
-python app.py --user alice                # 交互式 CLI
-PYTHONPATH=. python examples/basic_chat.py   # 跨 session 记忆演示
-PYTHONPATH=. python examples/multi_user.py   # 多用户记忆隔离
+python app.py --user alice          # 交互式 CLI
+python examples/basic_chat.py       # 跨 session 记忆演示
+python examples/multi_user.py       # 多用户记忆隔离
 ```
-
-> `examples/` 里的脚本没做 sys.path 处理，需要用 `PYTHONPATH=.` 从项目根运行。或者用 `python -m` 也行，`app.py` 本身在根目录不受影响。
 
 ## 作为库嵌入已有项目
 

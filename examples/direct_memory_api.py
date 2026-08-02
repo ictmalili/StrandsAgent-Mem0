@@ -4,7 +4,12 @@
 """
 from __future__ import annotations
 
-from memory.long_term import LongTermMemory
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from memory.long_term import LongTermMemory  # noqa: E402
 
 
 def main() -> None:

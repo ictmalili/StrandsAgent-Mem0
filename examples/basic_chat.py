@@ -4,7 +4,13 @@
 """
 from __future__ import annotations
 
-from agents import build_memory_agent
+import os
+import sys
+
+# 允许直接 `python examples/xxx.py` 运行, 无需设置 PYTHONPATH
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agents import build_memory_agent  # noqa: E402
 
 
 def main() -> None:

@@ -1,8 +1,13 @@
 """多用户示例：验证长期记忆按 user_id 隔离。"""
 from __future__ import annotations
 
-from agents import build_memory_agent
-from memory.long_term import LongTermMemory
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agents import build_memory_agent  # noqa: E402
+from memory.long_term import LongTermMemory  # noqa: E402
 
 
 def main() -> None:
