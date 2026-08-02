@@ -113,8 +113,9 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. 本地起 pgvector (postgres + 扩展)
+#    <YOUR_LOCAL_PG_PWD> 换成一个自己起的字母数字密码, 记住给 .env 用
 docker run -d --name mem0-pg \
-    -e POSTGRES_PASSWORD=alphanumericonly123 \
+    -e POSTGRES_PASSWORD=<YOUR_LOCAL_PG_PWD> \
     -e POSTGRES_DB=mem0 \
     -p 5432:5432 \
     pgvector/pgvector:pg16
@@ -146,7 +147,7 @@ SESSION_FILE_DIR=./.sessions
 # 长期记忆走本地 pgvector 容器
 VECTOR_STORE_PROVIDER=pgvector
 PGVECTOR_HOST=localhost
-PGVECTOR_PASSWORD=alphanumericonly123
+PGVECTOR_PASSWORD=<YOUR_LOCAL_PG_PWD>   # 跟上一步 docker run 时填的一致
 PGVECTOR_DBNAME=mem0
 PGVECTOR_SSLMODE=disable
 ```
@@ -179,6 +180,9 @@ python app.py --user alice
 一次拉起 **S3 + Aurora Serverless v2 + EC2 (Amazon Linux 2023) + SG + IAM**。EC2 带 SSM Session Manager，免 SSH 密钥。
 
 ```bash
+# 生成一个强随机密码 (纯字母数字, 24 字符)
+DB_PWD=$(python3 -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24)))")
+
 aws cloudformation deploy \
   --stack-name strands-mem0 \
   --template-file infrastructure/cloudformation/memory-infra.yaml \
@@ -188,8 +192,11 @@ aws cloudformation deploy \
       VpcId=vpc-xxxx \
       DBSubnetIds=subnet-aaaa,subnet-bbbb \
       EC2SubnetId=subnet-public-cccc \
-      DBMasterPassword='OnlyAlphanumericPwd123' \
+      DBMasterPassword="$DB_PWD" \
       EnableBedrockAccess=true         # 海外区用 Bedrock 时开启; 中国区留 false
+
+# 保存下这个密码, 后面配 .env 要用 (或存到 Secrets Manager)
+echo "生成的 DB 密码: $DB_PWD"
 ```
 
 > **⚠️ 密码规则**：`DBMasterPassword` 只能是字母数字（CFN `AllowedPattern` 已强制）。
@@ -392,18 +399,6 @@ OPENSEARCH_USER=admin
 OPENSEARCH_PASSWORD=xxx
 ```
 
-## 已知坑（从实测里挖出来的，都已固化到代码）
-
-| # | 坑 | 表现 | 修复位置 |
-|---|---|-----|---------|
-| 1 | Aurora 版本淘汰 | `Cannot find version 15.4 for aurora-postgresql` | CFN 默认 `16.14`，README 说明如何查当区版本 |
-| 2 | S3 bucket `Retain` 冲突 | Rollback 后再部署报 `EarlyValidation: ResourceExistenceCheck` | README 提示清理 bucket 后再部署 |
-| 3 | AL2023 `alternatives` 破坏 aws/dnf | `ModuleNotFoundError: awscli.clidriver` | user_data 不改 python3；`bootstrap.sh` 显式 `python3.11 -m venv` |
-| 4 | Mem0 v2 缺 `psycopg_pool` | `ImportError: Neither psycopg nor psycopg2 available` | `requirements.txt` 用 `psycopg[binary,pool]` |
-| 5 | DB 密码含 URL 保留字符 | `password authentication failed` | CFN `AllowedPattern` 强制字母数字 |
-| 6 | Mem0 v2 `search()` API 变了 | `Top-level entity parameters ... are not supported. Use filters=...` | `memory/long_term.py` 走 `filters` dict |
-| 7 | Bedrock 部分模型不支持 on-demand | `Retry with the ID or ARN of an inference profile` | 用 `us.anthropic.claude-sonnet-4-5-*` 这种带前缀的 inference profile ID |
-
 ## 清理资源
 
 ```bash
@@ -431,6 +426,3 @@ aws rds delete-db-cluster-snapshot --region us-east-1 \
 - S3 存储 & 请求：可忽略
 - Bedrock 调用：按 token 计费
 
-## 许可
-
-MIT
