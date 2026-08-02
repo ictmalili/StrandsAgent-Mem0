@@ -177,25 +177,47 @@ python app.py --user alice
 
 ### 1. 部署基础设施
 
-一次拉起 **S3 + Aurora Serverless v2 + EC2 (Amazon Linux 2023) + SG + IAM**。EC2 带 SSM Session Manager，免 SSH 密钥。
+一次拉起 **VPC + S3 + Aurora Serverless v2 + EC2 (Amazon Linux 2023) + SG + IAM**。EC2 带 SSM Session Manager，免 SSH 密钥。
 
 ```bash
 # 生成一个强随机密码 (纯字母数字, 24 字符)
 DB_PWD=$(python3 -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24)))")
+```
 
+**无脑一键（默认自建 VPC + subnet + IGW）**
+
+```bash
 aws cloudformation deploy \
   --stack-name strands-mem0 \
   --template-file infrastructure/cloudformation/memory-infra.yaml \
   --region us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
+      DBMasterPassword="$DB_PWD" \
+      EnableBedrockAccess=true         # 海外区用 Bedrock 时开启; 中国区留 false
+```
+
+CFN 会自动创建 `10.99.0.0/16` VPC + 2 个 public subnet + IGW，全免费资源。
+
+**复用已有 VPC（企业环境推荐）**
+
+```bash
+aws cloudformation deploy \
+  --stack-name strands-mem0 \
+  --template-file infrastructure/cloudformation/memory-infra.yaml \
+  --region us-east-1 \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+      CreateNewVpc=false \
       VpcId=vpc-xxxx \
       DBSubnetIds=subnet-aaaa,subnet-bbbb \
       EC2SubnetId=subnet-public-cccc \
       DBMasterPassword="$DB_PWD" \
-      EnableBedrockAccess=true         # 海外区用 Bedrock 时开启; 中国区留 false
+      EnableBedrockAccess=true
+```
 
-# 保存下这个密码, 后面配 .env 要用 (或存到 Secrets Manager)
+保存下密码（后面 `.env` 要用）：
+```bash
 echo "生成的 DB 密码: $DB_PWD"
 ```
 

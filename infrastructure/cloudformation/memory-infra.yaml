@@ -1,38 +1,53 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   StrandsAgent-Mem0 完整基础设施 (跨分区可移植: AWS 中国区 或 海外区)。
+
+  两种模式:
+    - CreateNewVpc=true  (默认): CFN 自动新建 VPC + IGW + 2 个 public subnet + 路由
+    - CreateNewVpc=false        : 复用你已有的 VPC, 需传 VpcId / DBSubnetIds / EC2SubnetId
+
   资源:
     - S3 Bucket                (短期记忆 / Session 持久化)
     - Aurora PostgreSQL v2     (长期记忆 / pgvector 向量库)
     - EC2 (Amazon Linux 2023)  (运行时/验证用, Session Manager 免 SSH 登录)
-    - Security Groups          (EC2 <-> Aurora, EC2 出网)
-    - IAM Roles                (EC2 实例角色 + 通用运行时角色)
-  前置:
-    - 已有 VPC 及至少 2 个位于不同 AZ 的私有子网 (Aurora 要求)
-    - EC2 子网需要能访问公网 (public subnet 或 private subnet + NAT)
+    - Security Groups + IAM Roles
 
 Parameters:
   ProjectName:
     Type: String
     Default: strands-mem0
 
+  # ---------- 网络: 自建 or 复用 ----------
+  CreateNewVpc:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      true = CFN 新建 VPC/子网 (无脑一键,POC 首选);
+      false = 复用现有 VPC (需同时提供 VpcId/DBSubnetIds/EC2SubnetId)
+
   VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: 承载 Aurora + EC2 的 VPC
+    Type: String
+    Default: ""
+    Description: 仅 CreateNewVpc=false 时使用;新建模式留空
+    AllowedPattern: "^$|^vpc-[a-f0-9]+$"
 
   DBSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: Aurora Subnet Group (至少 2 个不同 AZ 子网)
+    Type: CommaDelimitedList
+    Default: ""
+    Description: 仅 CreateNewVpc=false 时使用; 至少 2 个不同 AZ 子网, 逗号分隔
 
   EC2SubnetId:
-    Type: AWS::EC2::Subnet::Id
-    Description: EC2 部署的子网 (需能访问公网:pip/OpenAI/DeepSeek API)
+    Type: String
+    Default: ""
+    Description: 仅 CreateNewVpc=false 时使用; EC2 所在子网 (需能访问公网)
+    AllowedPattern: "^$|^subnet-[a-f0-9]+$"
 
   AssignPublicIp:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: EC2 子网若为 public subnet 建议 true; private subnet + NAT 则 false
+    Description: EC2 是否分配公网 IP (新建 VPC 模式必须 true)
 
   # ---------- Aurora ----------
   DBMasterUsername:
@@ -90,10 +105,97 @@ Parameters:
     Description: 授权 EC2 调用 Bedrock (仅海外区有意义)
 
 Conditions:
+  CreateVpc: !Equals [!Ref CreateNewVpc, "true"]
+  UseExistingVpc: !Equals [!Ref CreateNewVpc, "false"]
   GrantBedrock: !Equals [!Ref EnableBedrockAccess, "true"]
   UsePublicIp: !Equals [!Ref AssignPublicIp, "true"]
 
 Resources:
+
+  # ============================================================
+  # (可选) 自建 VPC + IGW + 2 个 public subnet + 路由
+  # ============================================================
+  NewVpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateVpc
+    Properties:
+      CidrBlock: 10.99.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateVpc
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-igw"
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref NewVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref NewVpc
+      CidrBlock: 10.99.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-public-a"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref NewVpc
+      CidrBlock: 10.99.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-public-b"
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref NewVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-public-rt"
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateVpc
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVpc
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVpc
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
 
   # ============================================================
   # S3: 短期记忆 (Session)
@@ -121,13 +223,13 @@ Resources:
             NoncurrentVersionExpirationInDays: 7
 
   # ============================================================
-  # 网络: Security Groups
+  # Security Groups (自动挑对应 VPC)
   # ============================================================
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: !Sub "${ProjectName} EC2 SG"
-      VpcId: !Ref VpcId
+      VpcId: !If [CreateVpc, !Ref NewVpc, !Ref VpcId]
       SecurityGroupEgress:
         - IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
@@ -137,9 +239,8 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: !Sub "${ProjectName} Aurora SG"
-      VpcId: !Ref VpcId
+      VpcId: !If [CreateVpc, !Ref NewVpc, !Ref VpcId]
 
-  # 只允许 EC2 SG 访问 Aurora 5432
   DBSGIngressFromEC2:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -157,7 +258,10 @@ Resources:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: !Sub "${ProjectName} Aurora subnet group"
-      SubnetIds: !Ref DBSubnetIds
+      SubnetIds: !If
+        - CreateVpc
+        - [!Ref PublicSubnetA, !Ref PublicSubnetB]
+        - !Ref DBSubnetIds
 
   AuroraCluster:
     Type: AWS::RDS::DBCluster
@@ -203,7 +307,6 @@ Resources:
               Service: !Sub "ec2.${AWS::URLSuffix}"
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        # Session Manager 免 SSH 登录
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
       Policies:
         - PolicyName: SessionBucketAccess
@@ -249,7 +352,7 @@ Resources:
       IamInstanceProfile: !Ref EC2InstanceProfile
       NetworkInterfaces:
         - DeviceIndex: 0
-          SubnetId: !Ref EC2SubnetId
+          SubnetId: !If [CreateVpc, !Ref PublicSubnetA, !Ref EC2SubnetId]
           GroupSet: [!Ref EC2SecurityGroup]
           AssociatePublicIpAddress: !If [UsePublicIp, true, false]
       BlockDeviceMappings:
@@ -290,6 +393,11 @@ Resources:
           echo "bootstrap done" > /var/log/strands-mem0-bootstrap.log
 
 Outputs:
+  VpcId:
+    Value: !If [CreateVpc, !Ref NewVpc, !Ref VpcId]
+    Description: 使用的 VPC (自建或复用)
+    Export: {Name: !Sub "${ProjectName}-VpcId"}
+
   SessionBucketName:
     Value: !Ref SessionBucket
     Description: 填入 .env SESSION_S3_BUCKET
