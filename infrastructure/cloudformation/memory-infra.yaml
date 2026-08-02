@@ -1,0 +1,328 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  StrandsAgent-Mem0 完整基础设施 (跨分区可移植: AWS 中国区 或 海外区)。
+  资源:
+    - S3 Bucket                (短期记忆 / Session 持久化)
+    - Aurora PostgreSQL v2     (长期记忆 / pgvector 向量库)
+    - EC2 (Amazon Linux 2023)  (运行时/验证用, Session Manager 免 SSH 登录)
+    - Security Groups          (EC2 <-> Aurora, EC2 出网)
+    - IAM Roles                (EC2 实例角色 + 通用运行时角色)
+  前置:
+    - 已有 VPC 及至少 2 个位于不同 AZ 的私有子网 (Aurora 要求)
+    - EC2 子网需要能访问公网 (public subnet 或 private subnet + NAT)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: strands-mem0
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: 承载 Aurora + EC2 的 VPC
+
+  DBSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Aurora Subnet Group (至少 2 个不同 AZ 子网)
+
+  EC2SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: EC2 部署的子网 (需能访问公网:pip/OpenAI/DeepSeek API)
+
+  AssignPublicIp:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: EC2 子网若为 public subnet 建议 true; private subnet + NAT 则 false
+
+  # ---------- Aurora ----------
+  DBMasterUsername:
+    Type: String
+    Default: postgres
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    MaxLength: 41
+    Description: >
+      Aurora 主用户密码 (12-41 字符, 仅字母数字)。
+      注意: Mem0 的 pgvector 后端内部把密码拼进 PostgreSQL URI, 若密码含 URL
+      保留字符 (# ! @ / : ? & = %), 会被截断/误解析导致认证失败。此处强制
+      纯字母数字以规避此坑。
+    AllowedPattern: "[a-zA-Z0-9]+"
+
+  DBName:
+    Type: String
+    Default: mem0
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9_]*"
+
+  DBMinCapacity:
+    Type: Number
+    Default: 0.5
+    Description: Serverless v2 最小 ACU
+
+  DBMaxCapacity:
+    Type: Number
+    Default: 2
+    Description: Serverless v2 最大 ACU
+
+  PostgresEngineVersion:
+    Type: String
+    Default: "16.14"
+    Description: Aurora PostgreSQL 版本 (>= 15.3 内置支持 pgvector; 16.14 主流稳定)
+
+  # ---------- EC2 ----------
+  EC2InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.micro, t3.small, t3.medium, t3.large, m6i.large]
+
+  EC2AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+    Description: Amazon Linux 2023 (SSM Parameter Store 自动解析当前区最新 AMI)
+
+  EnableBedrockAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: 授权 EC2 调用 Bedrock (仅海外区有意义)
+
+Conditions:
+  GrantBedrock: !Equals [!Ref EnableBedrockAccess, "true"]
+  UsePublicIp: !Equals [!Ref AssignPublicIp, "true"]
+
+Resources:
+
+  # ============================================================
+  # S3: 短期记忆 (Session)
+  # ============================================================
+  SessionBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-sessions-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldSessions
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 7
+
+  # ============================================================
+  # 网络: Security Groups
+  # ============================================================
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${ProjectName} EC2 SG"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: All outbound (pip, LLM APIs)
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${ProjectName} Aurora SG"
+      VpcId: !Ref VpcId
+
+  # 只允许 EC2 SG 访问 Aurora 5432
+  DBSGIngressFromEC2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Description: Postgres from application EC2
+
+  # ============================================================
+  # Aurora PostgreSQL Serverless v2
+  # ============================================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "${ProjectName} Aurora subnet group"
+      SubnetIds: !Ref DBSubnetIds
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !Sub "${ProjectName}-pg"
+      Engine: aurora-postgresql
+      EngineVersion: !Ref PostgresEngineVersion
+      EngineMode: provisioned
+      DatabaseName: !Ref DBName
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds: [!GetAtt DBSecurityGroup.GroupId]
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref DBMinCapacity
+        MaxCapacity: !Ref DBMaxCapacity
+
+  AuroraWriter:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-pg-writer"
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+
+  # ============================================================
+  # IAM: EC2 实例角色
+  # ============================================================
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ec2-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "ec2.${AWS::URLSuffix}"
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Session Manager 免 SSH 登录
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      Policies:
+        - PolicyName: SessionBucketAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt SessionBucket.Arn
+                  - !Sub "${SessionBucket.Arn}/*"
+        - !If
+          - GrantBedrock
+          - PolicyName: BedrockInvoke
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - bedrock:InvokeModel
+                    - bedrock:InvokeModelWithResponseStream
+                  Resource: "*"
+          - !Ref AWS::NoValue
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${ProjectName}-ec2-profile"
+      Roles: [!Ref EC2Role]
+
+  # ============================================================
+  # EC2: 应用/验证节点
+  # ============================================================
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref EC2AmiId
+      InstanceType: !Ref EC2InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref EC2SubnetId
+          GroupSet: [!Ref EC2SecurityGroup]
+          AssociatePublicIpAddress: !If [UsePublicIp, true, false]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-app"
+        - Key: Project
+          Value: !Ref ProjectName
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+
+          # 基础包
+          dnf update -y
+          dnf install -y python3.11 python3.11-pip git postgresql16 tmux jq
+
+          # 注意: 不修改 /usr/bin/python3 alternatives!
+          # AL2023 的 aws CLI 和 dnf 都是用系统 python3.9 写的, 覆盖会导致它们失效。
+          # 项目里请统一用 python3.11 显式创建 venv: `python3.11 -m venv .venv`
+
+          # 工作目录
+          install -d -o ec2-user -g ec2-user /opt/strands-mem0
+
+          # 便捷环境变量 (下次登录生效)
+          cat >> /home/ec2-user/.bashrc <<'EOF'
+          export PROJECT_DIR=/opt/strands-mem0
+          alias cdp='cd $PROJECT_DIR'
+          EOF
+          chown ec2-user:ec2-user /home/ec2-user/.bashrc
+
+          # SSM Agent 是 AL2023 预装的,无需额外操作
+          echo "bootstrap done" > /var/log/strands-mem0-bootstrap.log
+
+Outputs:
+  SessionBucketName:
+    Value: !Ref SessionBucket
+    Description: 填入 .env SESSION_S3_BUCKET
+    Export: {Name: !Sub "${ProjectName}-SessionBucket"}
+
+  DBWriterEndpoint:
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+    Description: 填入 .env PGVECTOR_HOST
+    Export: {Name: !Sub "${ProjectName}-DBWriterEndpoint"}
+
+  DBPort:
+    Value: !GetAtt AuroraCluster.Endpoint.Port
+    Description: 填入 .env PGVECTOR_PORT
+    Export: {Name: !Sub "${ProjectName}-DBPort"}
+
+  DBName:
+    Value: !Ref DBName
+    Description: 填入 .env PGVECTOR_DBNAME
+    Export: {Name: !Sub "${ProjectName}-DBName"}
+
+  DBSecurityGroupId:
+    Value: !GetAtt DBSecurityGroup.GroupId
+    Export: {Name: !Sub "${ProjectName}-DBSecurityGroupId"}
+
+  EC2SecurityGroupId:
+    Value: !GetAtt EC2SecurityGroup.GroupId
+    Export: {Name: !Sub "${ProjectName}-EC2SecurityGroupId"}
+
+  AppInstanceId:
+    Value: !Ref AppInstance
+    Description: 用 Session Manager 登录 - `aws ssm start-session --target <此ID>`
+    Export: {Name: !Sub "${ProjectName}-AppInstanceId"}
+
+  SessionManagerLoginCmd:
+    Value: !Sub "aws ssm start-session --target ${AppInstance} --region ${AWS::Region}"
+    Description: 直接复制粘贴执行即可登录 EC2
