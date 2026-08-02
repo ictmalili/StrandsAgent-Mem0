@@ -249,7 +249,9 @@ aws ssm start-session --target <AppInstanceId> --region us-east-1
 在 EC2 上：
 
 ```bash
-sudo chown -R ec2-user:ec2-user /opt/strands-mem0
+# SSM 默认登入用户是 ssm-user, 但 /opt/strands-mem0 属主是 ec2-user。
+# 先切到 ec2-user 的 login shell (PATH/HOME/权限一次到位):
+sudo -u ec2-user -i
 cd /opt/strands-mem0
 
 # 传代码 (选一):

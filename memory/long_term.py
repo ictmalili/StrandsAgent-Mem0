@@ -6,11 +6,20 @@ Mem0 会在 add() 时调用 LLM 从原始对话抽取"值得记住"的事实（�
 """
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Dict, List, Optional, Union
 
-from mem0 import Memory
+# ------ 抑制 Mem0 的可选/无害日志 ------
+# 1) 关闭遥测: 消除 [PostHog] Multiple active PostHog clients 警告
+os.environ.setdefault("MEM0_TELEMETRY", "false")
+# 2) 抑制 spaCy 未装的 error 日志 (可选实体链接功能, 不影响主流程)
+logging.getLogger("mem0").setLevel(logging.WARNING)
+logging.getLogger("mem0.memory.entity_extractor").setLevel(logging.CRITICAL)
 
-from config.mem0_config import build_mem0_config
+from mem0 import Memory  # noqa: E402
+
+from config.mem0_config import build_mem0_config  # noqa: E402
 
 
 class LongTermMemory:

@@ -331,6 +331,7 @@ Resources:
                   Action:
                     - bedrock:InvokeModel
                     - bedrock:InvokeModelWithResponseStream
+                    - bedrock:ListFoundationModels   # Mem0 启动自检需要
                   Resource: "*"
           - !Ref AWS::NoValue
 

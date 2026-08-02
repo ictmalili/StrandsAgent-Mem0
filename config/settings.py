@@ -36,20 +36,20 @@ class Settings(BaseSettings):
     )
 
     # ---------- LLM ----------
-    llm_provider: LLMProvider = "deepseek"
+    llm_provider: LLMProvider = "bedrock"
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.deepseek.com/v1"
-    llm_model: str = "deepseek-chat"
+    llm_base_url: str = ""
+    llm_model: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     llm_temperature: float = 0.3
     llm_max_tokens: int = 2048
     # Bedrock 专用: 模型调用区域 (可与数据面 aws_region 不同)
     bedrock_region: str = "us-east-1"
 
     # ---------- Embedder ----------
-    embedder_provider: EmbedderProvider = "qwen"
+    embedder_provider: EmbedderProvider = "bedrock"
     embedder_api_key: str = ""
-    embedder_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    embedder_model: str = "text-embedding-v3"
+    embedder_base_url: str = ""
+    embedder_model: str = "amazon.titan-embed-text-v2:0"
     embedder_dims: int = 1024
 
     # ---------- AWS (数据面: S3 + Aurora + OpenSearch) ----------
