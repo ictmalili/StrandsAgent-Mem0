@@ -13,9 +13,8 @@ Description: >
     - Security Groups + IAM Roles
 
 Parameters:
-  ProjectName:
-    Type: String
-    Default: strands-mem0
+  # 说明: 资源命名前缀直接采用 StackName (AWS::StackName), 无需单独参数,
+  # 避免多栈共存时资源名冲突。栈名唯一 = 资源名唯一。
 
   # ---------- 网络: 自建 or 复用 ----------
   CreateNewVpc:
@@ -124,7 +123,7 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-vpc"
+          Value: !Sub "${AWS::StackName}-vpc"
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -132,7 +131,7 @@ Resources:
     Properties:
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-igw"
+          Value: !Sub "${AWS::StackName}-igw"
 
   IGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -151,7 +150,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-public-a"
+          Value: !Sub "${AWS::StackName}-public-a"
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -163,7 +162,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-public-b"
+          Value: !Sub "${AWS::StackName}-public-b"
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -172,7 +171,7 @@ Resources:
       VpcId: !Ref NewVpc
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-public-rt"
+          Value: !Sub "${AWS::StackName}-public-rt"
 
   DefaultRoute:
     Type: AWS::EC2::Route
@@ -205,7 +204,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub "${ProjectName}-sessions-${AWS::AccountId}-${AWS::Region}"
+      BucketName: !Sub "${AWS::StackName}-sessions-${AWS::AccountId}-${AWS::Region}"
       VersioningConfiguration: {Status: Enabled}
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -228,7 +227,7 @@ Resources:
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "${ProjectName} EC2 SG"
+      GroupDescription: !Sub "${AWS::StackName} EC2 SG"
       VpcId: !If [CreateVpc, !Ref NewVpc, !Ref VpcId]
       SecurityGroupEgress:
         - IpProtocol: "-1"
@@ -238,7 +237,7 @@ Resources:
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "${ProjectName} Aurora SG"
+      GroupDescription: !Sub "${AWS::StackName} Aurora SG"
       VpcId: !If [CreateVpc, !Ref NewVpc, !Ref VpcId]
 
   DBSGIngressFromEC2:
@@ -257,7 +256,7 @@ Resources:
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: !Sub "${ProjectName} Aurora subnet group"
+      DBSubnetGroupDescription: !Sub "${AWS::StackName} Aurora subnet group"
       SubnetIds: !If
         - CreateVpc
         - [!Ref PublicSubnetA, !Ref PublicSubnetB]
@@ -268,7 +267,7 @@ Resources:
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
-      DBClusterIdentifier: !Sub "${ProjectName}-pg"
+      DBClusterIdentifier: !Sub "${AWS::StackName}-pg"
       Engine: aurora-postgresql
       EngineVersion: !Ref PostgresEngineVersion
       EngineMode: provisioned
@@ -286,7 +285,7 @@ Resources:
   AuroraWriter:
     Type: AWS::RDS::DBInstance
     Properties:
-      DBInstanceIdentifier: !Sub "${ProjectName}-pg-writer"
+      DBInstanceIdentifier: !Sub "${AWS::StackName}-pg-writer"
       DBClusterIdentifier: !Ref AuroraCluster
       DBInstanceClass: db.serverless
       Engine: aurora-postgresql
@@ -298,7 +297,7 @@ Resources:
   EC2Role:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ProjectName}-ec2-role"
+      RoleName: !Sub "${AWS::StackName}-ec2-role"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -338,7 +337,7 @@ Resources:
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      InstanceProfileName: !Sub "${ProjectName}-ec2-profile"
+      InstanceProfileName: !Sub "${AWS::StackName}-ec2-profile"
       Roles: [!Ref EC2Role]
 
   # ============================================================
@@ -363,9 +362,9 @@ Resources:
             Encrypted: true
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-app"
+          Value: !Sub "${AWS::StackName}-app"
         - Key: Project
-          Value: !Ref ProjectName
+          Value: !Ref "AWS::StackName"
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
@@ -396,40 +395,40 @@ Outputs:
   VpcId:
     Value: !If [CreateVpc, !Ref NewVpc, !Ref VpcId]
     Description: 使用的 VPC (自建或复用)
-    Export: {Name: !Sub "${ProjectName}-VpcId"}
+    Export: {Name: !Sub "${AWS::StackName}-VpcId"}
 
   SessionBucketName:
     Value: !Ref SessionBucket
     Description: 填入 .env SESSION_S3_BUCKET
-    Export: {Name: !Sub "${ProjectName}-SessionBucket"}
+    Export: {Name: !Sub "${AWS::StackName}-SessionBucket"}
 
   DBWriterEndpoint:
     Value: !GetAtt AuroraCluster.Endpoint.Address
     Description: 填入 .env PGVECTOR_HOST
-    Export: {Name: !Sub "${ProjectName}-DBWriterEndpoint"}
+    Export: {Name: !Sub "${AWS::StackName}-DBWriterEndpoint"}
 
   DBPort:
     Value: !GetAtt AuroraCluster.Endpoint.Port
     Description: 填入 .env PGVECTOR_PORT
-    Export: {Name: !Sub "${ProjectName}-DBPort"}
+    Export: {Name: !Sub "${AWS::StackName}-DBPort"}
 
   DBName:
     Value: !Ref DBName
     Description: 填入 .env PGVECTOR_DBNAME
-    Export: {Name: !Sub "${ProjectName}-DBName"}
+    Export: {Name: !Sub "${AWS::StackName}-DBName"}
 
   DBSecurityGroupId:
     Value: !GetAtt DBSecurityGroup.GroupId
-    Export: {Name: !Sub "${ProjectName}-DBSecurityGroupId"}
+    Export: {Name: !Sub "${AWS::StackName}-DBSecurityGroupId"}
 
   EC2SecurityGroupId:
     Value: !GetAtt EC2SecurityGroup.GroupId
-    Export: {Name: !Sub "${ProjectName}-EC2SecurityGroupId"}
+    Export: {Name: !Sub "${AWS::StackName}-EC2SecurityGroupId"}
 
   AppInstanceId:
     Value: !Ref AppInstance
     Description: 用 Session Manager 登录 - `aws ssm start-session --target <此ID>`
-    Export: {Name: !Sub "${ProjectName}-AppInstanceId"}
+    Export: {Name: !Sub "${AWS::StackName}-AppInstanceId"}
 
   SessionManagerLoginCmd:
     Value: !Sub "aws ssm start-session --target ${AppInstance} --region ${AWS::Region}"

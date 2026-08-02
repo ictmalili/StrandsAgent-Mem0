@@ -184,6 +184,8 @@ python app.py --user alice
 DB_PWD=$(python3 -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24)))")
 ```
 
+> **栈名 = 资源前缀**。所有资源命名（S3 bucket / IAM role / Aurora 等）以栈名为前缀。多栈共存时，只需要栈名不同即可，无需其他配置。
+
 **无脑一键（默认自建 VPC + subnet + IGW）**
 
 ```bash
@@ -306,7 +308,7 @@ EMBEDDER_DIMS=1536
 
 # 其余 AWS 相关同上
 ```
-</details>
+</details>111
 
 <details>
 <summary><b>中国区 · DeepSeek + 通义千问</b></summary>
